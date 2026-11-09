@@ -245,7 +245,9 @@ tr:hover{background:#fef9e6}
 
 <script>
 // Supabase 配置
-const SUPABASE_URL = 'https://noffptamoriqklsrfhdq.supabase.co';
+// 国内网络访问 supabase.co 时延高/不稳定，统一走腾讯云 SCF 中转函数
+const SUPABASE_URL = 'https://1528517512-7e2ane71y1.ap-guangzhou.tencentscf.com';
+// 备用直连地址：若中转不可用，可在控制台手动切回 'https://noffptamoriqklsrfhdq.supabase.co'
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5vZmZwdGFtb3JpcWtsc3JmaGRxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE0MjcwNDMsImV4cCI6MjA5NzAwMzA0M30.k6icC9TZq82WdZ3aFrdH3ZLYUIQ4VJ1ij2_C2AStCJM';
 
 let supabase = null;
@@ -299,23 +301,16 @@ let realtimeChannel = null;
 let syncTimer = null;
 let realtimeRetry = null;
 
+// 通过 HTTP 中转访问时 WebSocket 实时通道不可用，改用「定时轮询 + 回到前台立即刷新」
+let pollTimer = null;
+
 function setupRealtime() {
     if (!supabase) return;
-    if (realtimeChannel) { try { supabase.removeChannel(realtimeChannel); } catch (e) {} }
-    const onChange = () => scheduleCloudRefresh();
-    realtimeChannel = supabase.channel('spare-parts-sync')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'spare_stock' }, onChange)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'spare_history' }, onChange)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'ware_areas' }, onChange)
-        .subscribe((status) => {
-            if (status === 'SUBSCRIBED') {
-                setSyncStatus('online', '✅ 云端已连接 · 多端实时同步中');
-            } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-                setSyncStatus('loading', '🔄 实时通道中断，正在自动重连…');
-                if (realtimeRetry) clearTimeout(realtimeRetry);
-                realtimeRetry = setTimeout(() => { realtimeRetry = null; setupRealtime(); }, 3000);
-            }
-        });
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    pollTimer = setInterval(() => {
+        if (document.visibilityState === 'visible') cloudRefresh();
+    }, 5000);
+    setSyncStatus('online', '✅ 云端已连接 · 多端自动同步中（每 5 秒刷新）');
 }
 
 function scheduleCloudRefresh() {
@@ -331,7 +326,7 @@ async function cloudRefresh() {
         await loadAreas();
         rerenderAll();
         if (document.getElementById('syncStatus').className.indexOf('online') === -1) {
-            setSyncStatus('online', '✅ 云端已连接 · 多端实时同步中');
+            setSyncStatus('online', '✅ 云端已连接 · 多端自动同步中（每 5 秒刷新）');
         }
     } catch (err) {
         console.error('云端刷新失败:', err);
@@ -1037,7 +1032,7 @@ function showToast(msg) { const t = document.createElement('div'); t.innerText =
 // 手机切回前台、网络恢复时，立刻补一次全量同步
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && supabase) {
-        if (!realtimeChannel) setupRealtime();
+        if (!pollTimer) setupRealtime();
         scheduleCloudRefresh();
     }
 });
