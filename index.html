@@ -272,7 +272,7 @@ async function init() {
     if (!window.supabase || !window.supabase.createClient) {
         setSyncStatus('offline', '⚠️ 云端客户端未加载，当前为本地模式（改动不会保存到云端）');
         loadLocalDemoData();
-        clearStockTable();
+        restoreLastView();
         return;
     }
     try {
@@ -284,7 +284,7 @@ async function init() {
         setSyncStatus('loading', '🔄 云端已连接，正在加载数据并建立实时通道…');
         await loadAllData();
         await loadHistoryData();
-        clearStockTable();
+        restoreLastView();
         setupRealtime();
     } catch (err) {
         console.error('Supabase连接失败:', err);
@@ -292,7 +292,7 @@ async function init() {
         setSyncStatus('offline', '⚠️ 云端连接失败：' + msg + '（当前为本地模式，改动不会同步）');
         supabase = null;
         loadLocalDemoData();
-        clearStockTable();
+        restoreLastView();
     }
 }
 
@@ -321,10 +321,11 @@ function scheduleCloudRefresh() {
 async function cloudRefresh() {
     if (!supabase) return;
     try {
+        const beforeSig = JSON.stringify(allStockData) + '|' + JSON.stringify(currentHistoryData);
         await loadStockData();
         await loadHistoryData();
         await loadAreas();
-        rerenderAll();
+        if (JSON.stringify(allStockData) + '|' + JSON.stringify(currentHistoryData) !== beforeSig) rerenderAll();
         if (document.getElementById('syncStatus').className.indexOf('online') === -1) {
             setSyncStatus('online', '✅ 云端已连接 · 多端自动同步中（每 5 秒刷新）');
         }
@@ -338,6 +339,18 @@ function rerenderAll() {
     refreshCurrentView();
     if (document.getElementById('allStockBox').style.display === 'block') renderAllStockTable();
     if (document.getElementById('tab1').classList.contains('active')) renderHistoryTable(currentHistoryData);
+}
+
+// ===== 查询视图记忆（防止 5 秒轮询把查询结果清掉） =====
+let lastView = null;
+function saveLastView(v) {
+    lastView = v;
+    try { sessionStorage.setItem('stock_view', JSON.stringify(v)); } catch (e) { }
+}
+function loadLastView() {
+    if (lastView) return lastView;
+    try { lastView = JSON.parse(sessionStorage.getItem('stock_view') || 'null'); } catch (e) { lastView = null; }
+    return lastView;
 }
 
 // 清空查询结果表格（显示提示文字）
@@ -547,8 +560,10 @@ function searchStock() {
     const spKw = document.getElementById('searchSp').value.trim();
     let filtered = [];
     if (deviceKw === '' && spKw === '') {
+        saveLastView({ mode: 'warn' });
         filtered = allStockData.filter(item => item.num <= item.low_warn);
     } else {
+        saveLastView({ mode: 'search', device: deviceKw, sp: spKw });
         filtered = filterStockList(deviceKw, spKw);
     }
     renderStockTable(filtered);
@@ -558,19 +573,29 @@ function searchStock() {
 function resetSearch() {
     document.getElementById('searchDevice').value = '';
     document.getElementById('searchSp').value = '';
+    saveLastView({ mode: 'none' });
     clearStockTable();
 }
 
-// 刷新当前视图（在增删改后调用，如果有搜索条件则重新查询，否则保持空）
-function refreshCurrentView() {
-    const deviceKw = document.getElementById('searchDevice').value.trim();
-    const spKw = document.getElementById('searchSp').value.trim();
-    if (deviceKw === '' && spKw === '') {
-        clearStockTable();
-    } else {
-        renderStockTable(filterStockList(deviceKw, spKw));
+// 按上次查询的记忆重放视图（轮询、增删改后都走这里）
+function restoreLastView() {
+    const v = loadLastView();
+    if (!v || v.mode === 'none') { clearStockTable(); return; }
+    if (v.mode === 'warn') {
+        document.getElementById('searchDevice').value = '';
+        document.getElementById('searchSp').value = '';
+        renderStockTable(allStockData.filter(item => item.num <= item.low_warn));
+        return;
     }
+    if (v.mode === 'search') {
+        document.getElementById('searchDevice').value = v.device || '';
+        document.getElementById('searchSp').value = v.sp || '';
+        renderStockTable(filterStockList(v.device || '', v.sp || ''));
+        return;
+    }
+    clearStockTable();
 }
+function refreshCurrentView() { restoreLastView(); }
 
 async function stockIn() {
     const id = document.getElementById('editId').value;
